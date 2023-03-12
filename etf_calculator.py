@@ -21,6 +21,7 @@ import dash_bootstrap_components as dbc
 ##how to update the stock_ticker labels automatically, and only have the actual ticker and not numbers?
 
 app = dash.Dash(external_stylesheets=[dbc.themes.MINTY])
+server = app.server
 
 tic_symbols = pd.read_csv('supported_tickers.csv')
 tic_symbols.set_index('ticker',inplace=True)
