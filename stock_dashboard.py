@@ -6,8 +6,6 @@ Based on the selection, investments can be calculated and the price of a portfol
 
 To add:
 - while scrolling through ticker, add bar to make it faster
-- graph styling
-
 '''
 
 import pandas as pd
@@ -44,6 +42,7 @@ app = dash.Dash(__name__, external_stylesheets=[dbc.themes.MINTY],
                             'content': 'width=device-width, initial-scale=1.0'}]
                 )
 
+server=app.server
 
 #Layout section
 # ------------------------------------------------------------------------------------------------------------------
