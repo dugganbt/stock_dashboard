@@ -1,11 +1,12 @@
 '''
 Author: Brian Duggan
-Date: 26 March 2023
+Date: 28 March 2023
 A dashboard app allowing the user to to select and visualize stock prices over a selected time period.
 Based on the selection, investments can be calculated and the price of a portfolio, given an asset allocation, can be visualized over time.
 
 To add:
 - while scrolling through ticker, add bar to make it faster
+- initial allocation values while maintaining selection of stocks
 '''
 
 import pandas as pd
@@ -149,7 +150,7 @@ app.layout = dbc.Container([
             dbc.Row(html.H5('Enter allocation in %')),
             dbc.Row( ## Allocation table
                     dash_table.DataTable(#Default table
-                        id='allocation_table_container',
+                        id='allocation_table',
                         columns = [
                             {
                                 'name':'Stock symbol',
@@ -227,7 +228,7 @@ app.layout = dbc.Container([
 
 #Callback section
 # ------------------------------------------------------------------------------------------------------------------
-# Callback function for calculation of investment growth over time and summary table
+# Callback function for calculation of investment growth over time
 @app.callback(  [
                     Output('investment_output', 'children'),
                     # Output('summary_table','children'),
@@ -239,7 +240,7 @@ app.layout = dbc.Container([
                 [
                     State('initial_investment', 'value'),
                     State('monthly_investment', 'value'),
-                    State('allocation_table', 'data')
+                    State('allocation_table', 'data'),
                 ]
             )
 def display_growth(n_clicks, initial_investment, month_invest, allocation):
@@ -308,13 +309,13 @@ def display_growth(n_clicks, initial_investment, month_invest, allocation):
 # Also generates allocation table depending on stocks chosen
 @app.callback(  [
                 Output('my_graph','figure'),
-                Output('allocation_table_container','children')
+                Output('allocation_table','data')
                 ],
                 [Input('submit-button', 'n_clicks')],
-                [State('my_stock_picker', 'value'),
-                State('my_date_picker', 'value')
+                [State('my_date_picker', 'value'),
+                State('my_stock_picker', 'value')
                 ])
-def update_graph(n_clicks, stock_ticker, date_range):
+def update_graph(n_clicks, date_range, stock_ticker=default_stock_symbols):
 
     ### ---------------UPDATE GRAPH FOR STOCK TICKER VALUE-------------------------------------------------------------------------------------
     # the callback gets it as a string, therefore needs to be reconverted to datetime for the api call
@@ -344,29 +345,10 @@ def update_graph(n_clicks, stock_ticker, date_range):
     }
 
     ### ---------------CREATE ALLOCATION TABLE BASED ON SELECTION-------------------------------------------------------------------------------------
+    initial_alloc_table = pd.DataFrame(columns = ['Stock symbol','Allocation'])
+    initial_alloc_table['Stock symbol']=stock_ticker
 
-    alloc_table = dash_table.DataTable(
-        id='allocation_table',
-        columns = [
-            {
-                'name':'Stock symbol',
-                'id':'Stock symbol',
-            },
-            {
-                'name':'Allocation',
-                'id':'Allocation',
-                'type':'numeric',
-                'format':{"specifier": ",.0f"},
-                "editable": True,
-                "on_change": {"failure": "default"},
-                "validation": {"default": 0}
-            }
-        ],
-        data = default_allocation,
-        fill_width=False
-    )
-
-    return fig, alloc_table
+    return fig, initial_alloc_table.to_dict('records')
 
 #Other functions
 # ------------------------------------------------------------------------------------------------------------------
