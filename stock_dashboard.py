@@ -3,6 +3,11 @@ Author: Brian Duggan
 Date: 26 March 2023
 A dashboard app allowing the user to to select and visualize stock prices over a selected time period.
 Based on the selection, investments can be calculated and the price of a portfolio, given an asset allocation, can be visualized over time.
+
+To add:
+- while scrolling through ticker, add bar to make it faster
+- graph styling
+
 '''
 
 import pandas as pd
@@ -24,13 +29,20 @@ tic_symbols.set_index('ticker',inplace=True)
 options = list(tic_symbols.index)   #dataframe containing stock symbol options
 price_data = [] #Dataframe for storing stock data
 
+#Default values for Dashboard
+default_stock_symbols = ["TSLA", "CS"]
+default_allocation = {
+  "Stock symbol": default_stock_symbols,
+  "Allocation": [1, 99]
+  }
+default_allocation = pd.DataFrame(default_allocation)
+default_allocation = default_allocation.to_dict('records')
 
 
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.MINTY],
                 meta_tags=[{'name': 'viewport',
                             'content': 'width=device-width, initial-scale=1.0'}]
                 )
-server=app.server
 
 
 #Layout section
@@ -52,7 +64,7 @@ app.layout = dbc.Container([
             dcc.Dropdown(
                         id='my_stock_picker',
                         options = options,
-                        value=["TSLA"],
+                        value=default_stock_symbols,
                         multi = True
             ),
         ],
@@ -84,16 +96,20 @@ app.layout = dbc.Container([
 
     dbc.Row(#Row containing graph displaying stock value over time
         dbc.Col(
-            dcc.Graph(id='my_graph',
-                        figure={
-                            'data':[
-                                {'x':[1,2],'y':[3,1]}
-                            ],
-                            'layout':{
-                                'title': 'Stock closing prices over time'
+            dmc.LoadingOverlay(
+                dcc.Graph(id='my_graph',
+                            figure={
+                                'data':[
+                                    {'x':[1,2],'y':[3,1]}
+                                ],
+                                'layout':{
+                                    'title': 'Stock closing prices over time',
+                                    'template':'simple_white'
+                                }
                             }
-                        }
-            ), width={'size':12}, className='mt-5 g-0'
+                )
+            )
+            , width={'size':12}, className='mt-5 g-0'
         )
     ),
 
@@ -110,7 +126,7 @@ app.layout = dbc.Container([
                 id='initial_investment',
                 placeholder='USD',
                 type='number',
-                value=''
+                value=10000
             )
         ],
             width={'offset':2},
@@ -123,7 +139,7 @@ app.layout = dbc.Container([
                 id='monthly_investment',
                 placeholder='USD',
                 type='number',
-                value=''
+                value=200
             )
         ],
             width={'offset':2},
@@ -131,30 +147,64 @@ app.layout = dbc.Container([
         ),
 
         dbc.Col([#Input desired allocation
-            dbc.Row(html.H5('Allocation')),
+            dbc.Row(html.H5('Enter allocation in %')),
             dbc.Row( ## Allocation table
-                id='allocation_table_container',
+                    dash_table.DataTable(#Default table
+                        id='allocation_table_container',
+                        columns = [
+                            {
+                                'name':'Stock symbol',
+                                'id':'Stock symbol',
+                            },
+                            {
+                                'name':'Allocation',
+                                'id':'Allocation',
+                                'type':'numeric',
+                                'format':{"specifier": ",.0f"},
+                                "editable": True,
+                                "on_change": {"failure": "default"},
+                                "validation": {"default": 0}
+                            }
+                        ],
+                        data = default_allocation,
+                        fill_width=False
+                    )
             )
         ],
             width={'offset':2},
-            xs=12, sm=12, md=12, lg=3, xl=3, className='mt-4 m-4'
+            xs=12, sm=12, md=12, lg=3, xl=3, className='mt-4'
         ),
 
         dbc.Col(#Button to initiate calculation
-            html.Button(id='calculate-button',
-                        n_clicks=0,
-                        children='Calculate',
-                        className='btn btn-primary btn-lg'
-            ),
-            width={'offset':2},
-            xs=2, sm=2, md=2, lg=1, xl=1, className='mt-4 m-4'
+                dmc.HoverCard(#Hovercard when hovering with mouse over the button gives information
+                    withArrow=True,
+                    width=150,
+                    shadow="md",
+                    children=[
+                        dmc.HoverCardTarget(#contains the button to calculate value
+                            html.Button(id='calculate-button',
+                                        n_clicks=0,
+                                        children='Calculate',
+                                        className='btn btn-primary btn-lg'
+                            ),
+                        ),
+                        dmc.HoverCardDropdown(#Text discplayed in the hovercard
+                            dmc.Text(
+                                "Click to discover historical and current value of your portfolio",
+                                size="sm",
+                            )
+                        ),
+                    ],
+                ),
+            width={'offset':4},
+            xs=2, sm=2, md=2, lg=1, xl=1, className='mt-4'
         )
     ]),
 
     dbc.Row([#Resulting final value of investment
         dbc.Col([
-            html.H5('Investment value'),
-            html.Div(id='investment_output')
+            html.H5('Investment value today'),
+            html.H3(id='investment_output', className='text-success')
         ],
         width=12, className='mt-4'
         ),
@@ -194,7 +244,6 @@ app.layout = dbc.Container([
                 ]
             )
 def display_growth(n_clicks, initial_investment, month_invest, allocation):
-
     alloc_df = pd.DataFrame(allocation)#check allocation equals 100%
 
     #Create a summary table with the information of each stock needed to calculate returns
@@ -209,7 +258,7 @@ def display_growth(n_clicks, initial_investment, month_invest, allocation):
         start_date = price_data[price_data['symbol']==tic].iloc[0]['date']
         end_date = price_data[price_data['symbol']==tic].iloc[-1]['date']
 
-        tic_allocation = alloc_df[alloc_df['symbol']==tic]['alloc'].iloc[0]
+        tic_allocation = alloc_df[alloc_df['Stock symbol']==tic]['Allocation'].iloc[0]
 
         #initial investment calculation value
         init_shares = (initial_investment*tic_allocation/100)/price_at_start
@@ -235,7 +284,6 @@ def display_growth(n_clicks, initial_investment, month_invest, allocation):
 
 
         summary_df.loc[i] = [tic, start_date, price_at_start, end_date, price_at_end, tic_allocation, round(init_shares,2), round(monthly_shares,2), value]
-        print(summary_df.tail())
         i += 1
 
     #Figure of portfolio growth -> check jupyter notebook on how to make the portfolio growth graph
@@ -246,14 +294,15 @@ def display_growth(n_clicks, initial_investment, month_invest, allocation):
     fig = {
         'data': traces,
         'layout': go.Layout(
-        # title = ', '.join(tic_name) +' ('+ ', '.join(stock_ticker) +')' + ' Closing Prices',
-        yaxis={'title':'Value ($)'})
-        }
+        yaxis={'title':'Value in USD'},
+        template = 'simple_white'
+        )
+    }
 
     cash_out_value = summary_df['value ($)'].sum()
 
     # return round(cash_out_value,2), dash_table.DataTable(summary_df.to_dict('records')),fig
-    return round(cash_out_value,2),fig
+    return "{} USD".format(round(cash_out_value,2)),fig
 
 
 # Callback function to update the graph based on the stock ticker chosen
@@ -279,13 +328,9 @@ def update_graph(n_clicks, stock_ticker, date_range):
 
     traces = []
     for tic in stock_ticker:
-        df = web.get_data_tiingo(tic, start, end, api_key = 'b08c6021d2b9635edac117ef8347df3d684b33e0')
+        df = web.get_data_tiingo(tic, start, end, api_key = '7105aa11ad28bc8fa37d405d829d00adc66d910d')
         df.reset_index(inplace=True)
         price_data.append(df)
-        # df_meta = tingo.TiingoMetaDataReader(tic, start, end, api_key = 'b08c6021d2b9635edac117ef8347df3d684b33e0')
-        # tic_name = df_meta.read().loc['name']
-        # df.index = df.index.get_level_values('date')
-        # traces.append({'x': df.index, 'y': df['close'], 'name': tic_name})
         traces.append({'x': df[df['symbol']==tic]['date'], 'y': df[df['symbol']==tic]['adjClose'], 'name': tic})
 
     price_data = pd.concat(price_data)
@@ -293,34 +338,32 @@ def update_graph(n_clicks, stock_ticker, date_range):
     fig = {
         'data': traces,
         'layout': go.Layout(
-        # title = ', '.join(tic_name) +' ('+ ', '.join(stock_ticker) +')' + ' Closing Prices',
-        yaxis={'title':'Stock Prices in USD'})
-        }
+        yaxis={'title':'Stock Prices in USD'},
+        title='Stock closing prices over time',
+        template = 'simple_white'
+        ),
+    }
 
     ### ---------------CREATE ALLOCATION TABLE BASED ON SELECTION-------------------------------------------------------------------------------------
-
-    initial_alloc_table = pd.DataFrame(columns = ['symbol','alloc'])
-    initial_alloc_table['symbol']=stock_ticker
-
 
     alloc_table = dash_table.DataTable(
         id='allocation_table',
         columns = [
             {
                 'name':'Stock symbol',
-                'id':'symbol',
+                'id':'Stock symbol',
             },
             {
-                'name':'Allocation (%)',
-                'id':'alloc',
+                'name':'Allocation',
+                'id':'Allocation',
                 'type':'numeric',
                 'format':{"specifier": ",.0f"},
                 "editable": True,
                 "on_change": {"failure": "default"},
-            "validation": {"default": 0}
+                "validation": {"default": 0}
             }
         ],
-        data = initial_alloc_table.to_dict('records'),
+        data = default_allocation,
         fill_width=False
     )
 
