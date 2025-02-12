@@ -10,6 +10,7 @@ To add:
 '''
 
 import pandas as pd
+import os
 import pandas_datareader.data as web
 import pandas_datareader.tiingo as tingo
 import numpy as np
