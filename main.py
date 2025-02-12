@@ -354,6 +354,7 @@ def update_graph(n_clicks, date_range, stock_ticker=default_stock_symbols):
 # ------------------------------------------------------------------------------------------------------------------
 def daily_value(monthly_shares,day_price):
     return monthly_shares*day_price
-
+  
 if __name__ == '__main__':
-    app.run_server(debug=True,port=3000)
+    port = int(os.environ.get("PORT", 3000))
+    app.run_server(debug=False, host="0.0.0.0", port=port)
