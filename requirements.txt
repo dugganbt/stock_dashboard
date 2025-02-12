@@ -1,9 +1,10 @@
-dash==2.7.0
-dash_bootstrap_components==1.2.1
-dash_mantine_components==0.12.0
-numpy==1.21
 pandas==1.1.5
 pandas_datareader==0.10.0
 plotly==5.11.0
 Flask
 gunicorn
+dash==2.7.0
+dash_bootstrap_components==1.2.1
+dash_mantine_components==0.12.0
+numpy>=1.24.0
+pandas>=2.2.0
