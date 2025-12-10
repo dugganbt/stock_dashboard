@@ -9,6 +9,7 @@ To add:
 - initial allocation values while maintaining selection of stocks
 '''
 
+from pathlib import Path
 import pandas as pd
 import os
 import pandas_datareader.data as web
@@ -24,7 +25,11 @@ import dash_bootstrap_components as dbc
 import dash_mantine_components as dmc
 
 
-tic_symbols = pd.read_csv('supported_tickers.csv') #Initial supported ticker symbols
+BASE_DIR = Path(__file__).resolve().parent
+TIINGO_API_KEY = os.environ.get("TIINGO_API_KEY")
+TICKER_FILE = BASE_DIR / "supported_tickers.csv"
+
+tic_symbols = pd.read_csv(TICKER_FILE) #Initial supported ticker symbols
 tic_symbols.set_index('ticker',inplace=True)
 options = list(tic_symbols.index)   #dataframe containing stock symbol options
 price_data = [] #Dataframe for storing stock data
@@ -317,6 +322,8 @@ def display_growth(n_clicks, initial_investment, month_invest, allocation):
                 State('my_stock_picker', 'value')
                 ])
 def update_graph(n_clicks, date_range, stock_ticker=default_stock_symbols):
+    if not TIINGO_API_KEY:
+        raise RuntimeError("TIINGO_API_KEY environment variable is required to fetch data from Tiingo.")
 
     ### ---------------UPDATE GRAPH FOR STOCK TICKER VALUE-------------------------------------------------------------------------------------
     # the callback gets it as a string, therefore needs to be reconverted to datetime for the api call
@@ -329,7 +336,7 @@ def update_graph(n_clicks, date_range, stock_ticker=default_stock_symbols):
 
     traces = []
     for tic in stock_ticker:
-        df = web.get_data_tiingo(tic, start, end, api_key = '7105aa11ad28bc8fa37d405d829d00adc66d910d')
+        df = web.get_data_tiingo(tic, start, end, api_key=TIINGO_API_KEY)
         df.reset_index(inplace=True)
         price_data.append(df)
         traces.append({'x': df[df['symbol']==tic]['date'], 'y': df[df['symbol']==tic]['adjClose'], 'name': tic})
