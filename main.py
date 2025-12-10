@@ -8,11 +8,12 @@ Updated for Vercel:
 '''
 
 from pathlib import Path
+from typing import Optional
 import pandas as pd
 import os
 import yfinance as yf  
 import numpy as np
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from dash import Dash, dash_table, dcc, html, Input, Output, State, _dash_renderer
 import plotly.graph_objs as go
 import dash_bootstrap_components as dbc
@@ -23,21 +24,74 @@ _dash_renderer._set_react_version("18.2.0")
 
 BASE_DIR = Path(__file__).resolve().parent
 TICKER_FILE = BASE_DIR / "supported_tickers.csv"
+TICKER_REFRESH_INTERVAL = timedelta(days=1)
+DEFAULT_STOCK_SYMBOLS = ["TSLA", "AAPL"]
 
-# Load tickers
-try:
-    tic_symbols = pd.read_csv(TICKER_FILE)
-    tic_symbols.set_index('ticker', inplace=True)
-    options = list(tic_symbols.index)
-except Exception as e:
-    options = ["TSLA", "AAPL", "MSFT", "GOOGL"]
+
+def fetch_supported_ticker_list() -> Optional[pd.DataFrame]:
+    """
+    Pull ticker symbols from multiple yfinance sources to keep the dropdown current.
+    """
+    ticker_sources = [
+        ("sp500", getattr(yf, "tickers_sp500", None)),
+        ("nasdaq", getattr(yf, "tickers_nasdaq", None)),
+        ("other", getattr(yf, "tickers_other", None)),
+    ]
+
+    symbols = set()
+    for name, func in ticker_sources:
+        if not callable(func):
+            continue
+        try:
+            symbols.update(func())
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ticker-refresh] {name} fetch failed: {exc}")
+
+    cleaned_symbols = sorted({sym.strip().upper() for sym in symbols if isinstance(sym, str) and sym.strip()})
+    return pd.DataFrame({"ticker": cleaned_symbols}) if cleaned_symbols else None
+
+
+def load_supported_tickers(force_refresh: bool = False) -> pd.DataFrame:
+    """
+    Load supported tickers from disk, refreshing them if the file is stale or missing.
+    """
+    should_refresh = force_refresh or not TICKER_FILE.exists()
+    if TICKER_FILE.exists() and not force_refresh:
+        last_modified = datetime.fromtimestamp(TICKER_FILE.stat().st_mtime)
+        should_refresh = datetime.now() - last_modified > TICKER_REFRESH_INTERVAL
+
+    refreshed_df = None
+    if should_refresh:
+        refreshed_df = fetch_supported_ticker_list()
+        if refreshed_df is not None:
+            try:
+                refreshed_df.to_csv(TICKER_FILE, index=False)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[ticker-refresh] Failed to persist ticker file: {exc}")
+
+    try:
+        df = refreshed_df if refreshed_df is not None else pd.read_csv(TICKER_FILE)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[ticker-refresh] Falling back to defaults: {exc}")
+        df = pd.DataFrame({"ticker": DEFAULT_STOCK_SYMBOLS})
+
+    if "ticker" not in df.columns:
+        df = pd.DataFrame({"ticker": DEFAULT_STOCK_SYMBOLS})
+
+    df = pd.concat([df, pd.DataFrame({"ticker": DEFAULT_STOCK_SYMBOLS})], ignore_index=True)
+    df["ticker"] = df["ticker"].astype(str).str.upper()
+    df = df.dropna(subset=["ticker"]).drop_duplicates(subset=["ticker"])
+    return df
+
+tic_symbols = load_supported_tickers()
+tic_symbols.set_index('ticker', inplace=True)
+options = list(tic_symbols.index)
 
 price_data = [] 
 
 # Default values
-default_stock_symbols = ["TSLA", "AAPL"]
 default_allocation = {
-  "Stock symbol": default_stock_symbols,
+  "Stock symbol": DEFAULT_STOCK_SYMBOLS,
   "Allocation": [50, 50]
 }
 default_allocation_df = pd.DataFrame(default_allocation)
@@ -53,6 +107,7 @@ server = app.server
 # 2. Wrap layout in MantineProvider
 app.layout = dmc.MantineProvider(
     dbc.Container([
+        dcc.Interval(id='ticker-refresh', interval=24 * 60 * 60 * 1000, n_intervals=0),
         dbc.Row([
             dbc.Col(
                 html.H1("Stock Dashboard", className='text-center mb-4'),
@@ -66,7 +121,7 @@ app.layout = dmc.MantineProvider(
                 dcc.Dropdown(
                     id='my_stock_picker',
                     options=options,
-                    value=default_stock_symbols,
+                    value=DEFAULT_STOCK_SYMBOLS,
                     multi=True
                 ),
             ], xs=12, sm=12, md=12, lg=5, xl=5, className='mt-4'),
@@ -167,6 +222,16 @@ app.layout = dmc.MantineProvider(
         ])
     ])
 )
+
+
+@app.callback(
+    Output('my_stock_picker', 'options'),
+    Input('ticker-refresh', 'n_intervals')
+)
+def refresh_ticker_options(n_intervals):
+    ticker_df = load_supported_tickers(force_refresh=bool(n_intervals))
+    return ticker_df['ticker'].tolist()
+
 
 @app.callback(
     [Output('investment_output', 'children'), Output('portfolio_growth', 'figure')],
@@ -277,7 +342,7 @@ def display_growth(n_clicks, initial_investment, month_invest, allocation):
 )
 def update_graph(n_clicks, date_range, stock_ticker):
     if not stock_ticker:
-        stock_ticker = default_stock_symbols
+        stock_ticker = DEFAULT_STOCK_SYMBOLS
         
     start_date = date_range[0]
     end_date = date_range[1]
