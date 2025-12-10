@@ -3,5 +3,5 @@ dash-bootstrap-components
 dash-mantine-components
 numpy
 pandas
-pandas-datareader
 plotly
+yfinance

@@ -1,13 +1,15 @@
 '''
 Author: Brian Duggan
 Date: 28 March 2023
-Updated for Dash Mantine Components 0.14+ compatibility
+Updated for Vercel:
+- Compatible with Dash Mantine Components 0.14+ (DatePickerInput)
+- Uses yfinance for reliable data fetching
 '''
 
 from pathlib import Path
 import pandas as pd
 import os
-import pandas_datareader.data as web
+import yfinance as yf  
 import numpy as np
 from datetime import datetime, date
 from dash import Dash, dash_table, dcc, html, Input, Output, State, _dash_renderer
@@ -15,11 +17,9 @@ import plotly.graph_objs as go
 import dash_bootstrap_components as dbc
 import dash_mantine_components as dmc
 
-# 1. FIX: Set React version for DMC 0.14+
 _dash_renderer._set_react_version("18.2.0")
 
 BASE_DIR = Path(__file__).resolve().parent
-TIINGO_API_KEY = os.environ.get("TIINGO_API_KEY")
 TICKER_FILE = BASE_DIR / "supported_tickers.csv"
 
 # Load tickers
@@ -28,16 +28,16 @@ try:
     tic_symbols.set_index('ticker', inplace=True)
     options = list(tic_symbols.index)
 except Exception as e:
-    print(f"Warning: Could not load tickers from {TICKER_FILE}. Using defaults. Error: {e}")
-    options = ["TSLA", "CS"]
+    # Fallback if CSV is missing or CS is delisted
+    options = ["TSLA", "AAPL", "MSFT", "GOOGL"]
 
 price_data = [] 
 
 # Default values
-default_stock_symbols = ["TSLA", "CS"]
+default_stock_symbols = ["TSLA", "AAPL"]
 default_allocation = {
   "Stock symbol": default_stock_symbols,
-  "Allocation": [1, 99]
+  "Allocation": [50, 50]
 }
 default_allocation_df = pd.DataFrame(default_allocation)
 default_allocation_dict = default_allocation_df.to_dict('records')
@@ -49,7 +49,7 @@ app = Dash(__name__, external_stylesheets=[dbc.themes.MINTY],
 
 server = app.server
 
-# Layout section
+# 2. CRITICAL: Wrap layout in MantineProvider for DMC 0.14+
 app.layout = dmc.MantineProvider(
     dbc.Container([
         dbc.Row([
@@ -72,9 +72,10 @@ app.layout = dmc.MantineProvider(
 
             dbc.Col([
                 html.H5('Select a start and end date'),
+                # 3. CRITICAL: Use DatePickerInput (type="range") instead of old DateRangePicker
                 dmc.DatePickerInput(
                     id='my_date_picker',
-                    type="range",  
+                    type="range",
                     minDate=date(1950, 1, 1),
                     value=[datetime(2018, 1, 1), datetime.today()],
                     style={"width": "100%"}
@@ -166,7 +167,6 @@ app.layout = dmc.MantineProvider(
     ])
 )
 
-# Callback section
 @app.callback(
     [Output('investment_output', 'children'), Output('portfolio_growth', 'figure')],
     [Input('calculate-button', 'n_clicks')],
@@ -178,24 +178,15 @@ def display_growth(n_clicks, initial_investment, month_invest, allocation):
         
     alloc_df = pd.DataFrame(allocation)
     
-    # Ensure all stocks in allocation are in price_data
-    available_stocks = [df['symbol'].iloc[0] for df in price_data if not df.empty] if isinstance(price_data, list) else price_data['symbol'].unique()
-    
-    # Simple check to prevent errors on empty data
-    if len(available_stocks) == 0:
-        return "0 USD", {}
+    # Safety check for empty price data
+    working_price_data = pd.concat(price_data) if isinstance(price_data, list) else price_data
+    if working_price_data.empty:
+         return "0 USD", {}
 
     summary_df = pd.DataFrame(columns=['stock', 'start_date', 'initial_price', 'end_date', 'end_price', 'allocation(%)', 'Shares (initial)', 'Shares (monthly)', 'value ($)'])
     daily_value_df = pd.DataFrame(columns=['symbol', 'date', 'adjClose', 'daily_value'])
     traces = []
     
-    # Process price_data (Handling list vs concat DF)
-    working_price_data = pd.concat(price_data) if isinstance(price_data, list) else price_data
-
-    # Helper function
-    def daily_value_func(monthly_shares, day_price):
-        return monthly_shares * day_price
-
     i = 0
     for tic in alloc_df['Stock symbol'].unique():
         if tic not in working_price_data['symbol'].values:
@@ -216,17 +207,12 @@ def display_growth(n_clicks, initial_investment, month_invest, allocation):
 
         tic_data['year'] = tic_data['date'].apply(lambda n: n.year)
         tic_data['month'] = tic_data['date'].apply(lambda n: n.month)
-
-        temp_daily_values = []
         
         # Calculate monthly updates
-        # Optimization: Don't loop rows if possible, but keeping logic similar to original for safety
         for (year, month), data in tic_data.groupby(['year', 'month']):
             month_price = data['adjClose'].iloc[0]
             monthly_shares += (month_invest * tic_allocation / 100) / month_price
             
-            # Calculate value for these days
-            # We must use the 'monthly_shares' current value for these specific days
             vals = data['adjClose'] * monthly_shares
             temp_df = data[['symbol', 'date', 'adjClose']].copy()
             temp_df['daily_value'] = vals
@@ -236,9 +222,7 @@ def display_growth(n_clicks, initial_investment, month_invest, allocation):
         summary_df.loc[i] = [tic, start_date, price_at_start, end_date, price_at_end, tic_allocation, round(init_shares, 2), round(monthly_shares, 2), value]
         i += 1
 
-    # Plotting
     if not daily_value_df.empty:
-        # Sum daily values across all stocks
         portfolio_daily = daily_value_df.groupby('date')['daily_value'].sum().reset_index()
         traces.append({'x': portfolio_daily['date'], 'y': portfolio_daily['daily_value'], 'name': 'Portfolio value'})
 
@@ -259,15 +243,10 @@ def update_graph(n_clicks, date_range, stock_ticker):
     if not stock_ticker:
         stock_ticker = default_stock_symbols
         
-    if not TIINGO_API_KEY:
-        # Return empty/default if no key (prevents crash on build)
-        return {}, default_allocation_dict
-
-    # Date parsing: dmc 0.14+ DatePickerInput usually returns ISO strings or None
     start_date = date_range[0]
     end_date = date_range[1]
     
-    # Ensure dates are datetime objects (Tiingo needs datetime)
+    # 4. FIX: Ensure dates are proper datetime objects
     if isinstance(start_date, str):
         start = datetime.fromisoformat(start_date).replace(tzinfo=None)
     else:
@@ -284,10 +263,25 @@ def update_graph(n_clicks, date_range, stock_ticker):
 
     for tic in stock_ticker:
         try:
-            df = web.get_data_tiingo(tic, start, end, api_key=TIINGO_API_KEY)
+
+            df = yf.download(tic, start=start, end=end, progress=False)
             df.reset_index(inplace=True)
+            
+            # yfinance creates 'Adj Close', but our code uses 'adjClose'
+            if 'Adj Close' in df.columns:
+                df.rename(columns={'Adj Close': 'adjClose'}, inplace=True)
+            elif 'Close' in df.columns:
+                # Fallback if Adj Close isn't present
+                df['adjClose'] = df['Close']
+            
+            # yfinance 'Date' column is usually correct, but ensure consistency
+            if 'Date' in df.columns:
+                df.rename(columns={'Date': 'date'}, inplace=True)
+                
+            df['symbol'] = tic
+            
             price_data.append(df)
-            traces.append({'x': df[df['symbol'] == tic]['date'], 'y': df[df['symbol'] == tic]['adjClose'], 'name': tic})
+            traces.append({'x': df['date'], 'y': df['adjClose'], 'name': tic})
         except Exception as e:
             print(f"Error fetching {tic}: {e}")
 
@@ -304,7 +298,6 @@ def update_graph(n_clicks, date_range, stock_ticker):
     }
 
     initial_alloc_table = pd.DataFrame({'Stock symbol': stock_ticker, 'Allocation': [0]*len(stock_ticker)})
-    # Set default allocation if 2 stocks
     if len(stock_ticker) == 2:
         initial_alloc_table['Allocation'] = [50, 50]
 
