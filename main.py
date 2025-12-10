@@ -204,9 +204,11 @@ app.layout = dmc.MantineProvider(
                                     id='my_stock_picker',
                                     options=options,
                                     value=DEFAULT_STOCK_SYMBOLS,
-                                    multi=True
+                                    multi=True,
+                                    style={"width": "100%"}
                                 ),
-                                dbc.Badge("Supported tickers refresh daily", color="info", className="mt-2")
+                                dbc.Badge("Supported tickers refresh daily", color="info", className="mt-2 d-none d-md-inline-block"),
+                                html.Small("Supported tickers refresh daily", className="text-muted mt-2 d-md-none")
                             ], xs=12, sm=12, md=12, lg=5, xl=5, className='mt-2'),
 
                             dbc.Col([
