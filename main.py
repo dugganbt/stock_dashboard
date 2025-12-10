@@ -26,6 +26,60 @@ BASE_DIR = Path(__file__).resolve().parent
 TICKER_FILE = BASE_DIR / "supported_tickers.csv"
 TICKER_REFRESH_INTERVAL = timedelta(days=1)
 DEFAULT_STOCK_SYMBOLS = ["TSLA", "AAPL"]
+price_cache = {}
+
+
+def empty_figure(message: str = "No data to display yet"):
+    """Simple empty-state figure with a centered note."""
+    return {
+        "data": [],
+        "layout": go.Layout(
+            title=message,
+            template="simple_white",
+            xaxis={"visible": False},
+            yaxis={"visible": False},
+            annotations=[{
+                "text": message,
+                "xref": "paper",
+                "yref": "paper",
+                "showarrow": False,
+                "font": {"size": 14}
+            }],
+        ),
+    }
+
+
+def format_currency(value: float) -> str:
+    """Format numbers as currency strings."""
+    try:
+        return f"${value:,.2f}"
+    except Exception:  # noqa: BLE001
+        return "$0.00"
+
+
+def build_stats_cards(total_contributions: float, current_value: float, gain: float, ret_pct: float):
+    """Render quick stats cards for the portfolio view."""
+    metrics = [
+        ("Total contributed", format_currency(total_contributions)),
+        ("Current value", format_currency(current_value)),
+        ("Net gain / loss", format_currency(gain)),
+        ("Return vs contributions", f"{ret_pct:,.2f}%"),
+    ]
+    cards = []
+    for label, display in metrics:
+        cards.append(
+            dbc.Col(
+                dbc.Card(
+                    dbc.CardBody([
+                        html.Small(label, className="text-muted"),
+                        html.H5(display, className="mt-2"),
+                    ]),
+                    className="h-100 shadow-sm border-0"
+                ),
+                sm=6, lg=3
+            )
+        )
+    return dbc.Row(cards, className="g-3")
 
 
 def fetch_supported_ticker_list() -> Optional[pd.DataFrame]:
@@ -83,6 +137,27 @@ def load_supported_tickers(force_refresh: bool = False) -> pd.DataFrame:
     df = df.dropna(subset=["ticker"]).drop_duplicates(subset=["ticker"])
     return df
 
+
+def get_price_data(ticker: str, start: datetime, end: datetime) -> pd.DataFrame:
+    """
+    Pull price data with a tiny in-memory cache to cut down on repeat downloads.
+    """
+    key = (ticker, start.date().isoformat(), end.date().isoformat())
+    if key in price_cache:
+        return price_cache[key].copy()
+
+    df = yf.download(
+        ticker,
+        start=start,
+        end=end,
+        progress=False,
+        auto_adjust=True,
+        actions=False,
+        group_by="column"
+    )
+    price_cache[key] = df.copy()
+    return df
+
 tic_symbols = load_supported_tickers()
 tic_symbols.set_index('ticker', inplace=True)
 options = list(tic_symbols.index)
@@ -110,117 +185,142 @@ app.layout = dmc.MantineProvider(
         dcc.Interval(id='ticker-refresh', interval=24 * 60 * 60 * 1000, n_intervals=0),
         dbc.Row([
             dbc.Col(
-                html.H1("Stock Dashboard", className='text-center mb-4'),
+                html.Div([
+                    html.H1("Stock Dashboard", className='text-center mb-2'),
+                    html.P("Track prices, test allocations, and see how your portfolio could grow over time.", className="text-center text-muted"),
+                ]),
                 width=12
             )
         ]),
 
-        dbc.Row([
-            dbc.Col([
-                html.H5('Enter a stock symbol'),
-                dcc.Dropdown(
-                    id='my_stock_picker',
-                    options=options,
-                    value=DEFAULT_STOCK_SYMBOLS,
-                    multi=True
-                ),
-            ], xs=12, sm=12, md=12, lg=5, xl=5, className='mt-4'),
-
-            dbc.Col([
-                html.H5('Select a start and end date'),
-                # 3. Use DatePickerInput (type="range")
-                dmc.DatePickerInput(
-                    id='my_date_picker',
-                    type="range",
-                    minDate=date(1950, 1, 1),
-                    value=[datetime(2018, 1, 1), datetime.today()],
-                    style={"width": "100%"}
-                )
-            ], width={'offset': 2}, xs=12, sm=12, md=12, lg=5, xl=5, className='mt-4'),
-
+        dbc.Row(
             dbc.Col(
-                html.Button(id='submit-button',
-                            n_clicks=0,
-                            children='Submit',
-                            className='btn btn-primary btn-lg'),
-                xs=2, sm=2, md=2, lg=1, xl=1, className='mt-4'
+                dbc.Card(
+                    dbc.CardBody([
+                        dbc.Row([
+                            dbc.Col([
+                                html.H5('Enter a stock symbol'),
+                                dcc.Dropdown(
+                                    id='my_stock_picker',
+                                    options=options,
+                                    value=DEFAULT_STOCK_SYMBOLS,
+                                    multi=True
+                                ),
+                                dbc.Badge("Supported tickers refresh daily", color="info", className="mt-2")
+                            ], xs=12, sm=12, md=12, lg=5, xl=5, className='mt-2'),
+
+                            dbc.Col([
+                                html.H5('Select a start and end date'),
+                                dmc.DatePickerInput(
+                                    id='my_date_picker',
+                                    type="range",
+                                    minDate=date(1950, 1, 1),
+                                    value=[datetime(2018, 1, 1), datetime.today()],
+                                    style={"width": "100%"}
+                                )
+                            ], xs=12, sm=12, md=12, lg=5, xl=5, className='mt-2'),
+
+                            dbc.Col(
+                                html.Button(id='submit-button',
+                                            n_clicks=0,
+                                            children='Load prices',
+                                            className='btn btn-primary btn-lg w-100'),
+                                xs=12, sm=12, md=12, lg=2, xl=2, className='mt-4'
+                            )
+                        ], align='end'),
+                    ]),
+                    className="shadow-sm border-0"
+                ),
+                width=12,
+                className="mt-3"
             )
-        ], align='end'),
+        ),
 
         dbc.Row(
             dbc.Col(
                 dcc.Loading(
-                    dcc.Graph(id='my_graph',
-                              figure={
-                                  'data': [{'x': [1, 2], 'y': [3, 1]}],
-                                  'layout': {'title': 'Stock closing prices over time', 'template': 'simple_white'}
-                              })
-                ), width={'size': 12}, className='mt-5 g-0'
+                    dcc.Graph(
+                        id='my_graph',
+                        figure=empty_figure("Select stocks and dates, then click Load prices")
+                    )
+                ), width={'size': 12}, className='mt-4 g-0'
             )
         ),
 
-        dbc.Row([dbc.Col(html.H2('Investment calculator'))]),
+        dbc.Row([dbc.Col(html.H2('Investment calculator', className='mt-4'))]),
 
-        dbc.Row([
-            dbc.Col([
-                html.H5('Initial investment'),
-                dcc.Input(id='initial_investment', placeholder='USD', type='number', value=10000)
-            ], width={'offset': 2}, xs=12, sm=12, md=12, lg=3, xl=3, className='mt-4'),
-
-            dbc.Col([
-                html.H5('Monthly investment'),
-                dcc.Input(id='monthly_investment', placeholder='USD', type='number', value=200)
-            ], width={'offset': 2}, xs=12, sm=12, md=12, lg=3, xl=3, className='mt-4'),
-
-            dbc.Col([
-                dbc.Row(html.H5('Enter allocation in %')),
-                dbc.Row(
-                    dash_table.DataTable(
-                        id='allocation_table',
-                        columns=[
-                            {'name': 'Stock symbol', 'id': 'Stock symbol'},
-                            {'name': 'Allocation', 'id': 'Allocation', 'type': 'numeric',
-                             'format': {"specifier": ",.0f"}, "editable": True}
-                        ],
-                        data=default_allocation_dict,
-                        fill_width=False
-                    )
-                )
-            ], width={'offset': 2}, xs=12, sm=12, md=12, lg=3, xl=3, className='mt-4'),
-
+        dbc.Row(
             dbc.Col(
-                dmc.HoverCard(
-                    withArrow=True,
-                    width=150,
-                    shadow="md",
-                    children=[
-                        dmc.HoverCardTarget(
-                            html.Button(id='calculate-button', n_clicks=0, children='Calculate',
-                                        className='btn btn-primary btn-lg')
-                        ),
-                        dmc.HoverCardDropdown(
-                            dmc.Text("Click to discover historical and current value of your portfolio", size="sm")
-                        ),
-                    ],
-                ), width={'offset': 4}, xs=2, sm=2, md=2, lg=1, xl=1, className='mt-4'
-            )
-        ]),
+                dbc.Card(
+                    dbc.CardBody([
+                        dbc.Row([
+                            dbc.Col([
+                                html.H5('Initial investment'),
+                                dcc.Input(id='initial_investment', placeholder='USD', type='number', value=10000, className="w-100")
+                            ], xs=12, sm=12, md=12, lg=3, xl=3, className='mt-2'),
 
-        dbc.Row([
-            dbc.Col([
-                html.H5('Investment value today'),
-                html.H3(id='investment_output', className='text-success')
-            ], width=12, className='mt-4'),
-        ]),
+                            dbc.Col([
+                                html.H5('Monthly investment'),
+                                dcc.Input(id='monthly_investment', placeholder='USD', type='number', value=200, className="w-100")
+                            ], xs=12, sm=12, md=12, lg=3, xl=3, className='mt-2'),
 
-        dbc.Row([
-            dbc.Col(html.H5('Portfolio value over time'), width=12),
-            dbc.Col(
-                dcc.Loading(dcc.Graph(id='portfolio_growth')),
-                width=12
+                            dbc.Col([
+                                dbc.Row(html.H5('Enter allocation in %')),
+                                dbc.Row(
+                                    dash_table.DataTable(
+                                        id='allocation_table',
+                                        columns=[
+                                            {'name': 'Stock symbol', 'id': 'Stock symbol'},
+                                            {'name': 'Allocation', 'id': 'Allocation', 'type': 'numeric',
+                                             'format': {"specifier": ",.0f"}, "editable": True}
+                                        ],
+                                        data=default_allocation_dict,
+                                        fill_width=False,
+                                        style_table={"overflowX": "auto"},
+                                    )
+                                )
+                            ], xs=12, sm=12, md=12, lg=4, xl=4, className='mt-2'),
+
+                            dbc.Col(
+                                dmc.HoverCard(
+                                    withArrow=True,
+                                    width=200,
+                                    shadow="md",
+                                    children=[
+                                        dmc.HoverCardTarget(
+                                            html.Button(id='calculate-button', n_clicks=0, children='Calculate',
+                                                        className='btn btn-success btn-lg w-100')
+                                        ),
+                                        dmc.HoverCardDropdown(
+                                            dmc.Text("Run the calculator to see portfolio value and stats", size="sm")
+                                        ),
+                                    ],
+                                ), xs=12, sm=12, md=12, lg=2, xl=2, className='mt-4'
+                            )
+                        ]),
+                        dbc.Row(dbc.Col(dbc.Alert(id='calc_alert', is_open=False, color='warning', className='mt-3'))),
+                        dbc.Row([
+                            dbc.Col([
+                                html.H5('Investment value today'),
+                                html.H3(id='investment_output', className='text-success'),
+                                html.Div(id='portfolio_stats', className='mt-3')
+                            ], width=12, className='mt-3'),
+                        ]),
+                        dbc.Row([
+                            dbc.Col(html.H5('Portfolio value over time'), width=12),
+                            dbc.Col(
+                                dcc.Loading(dcc.Graph(id='portfolio_growth', figure=empty_figure("Run the calculator to see growth"))),
+                                width=12
+                            )
+                        ])
+                    ]),
+                    className="shadow-sm border-0"
+                ),
+                width=12,
+                className="mt-3"
             )
-        ])
-    ])
+        ),
+    ], fluid=True)
 )
 
 
@@ -234,27 +334,46 @@ def refresh_ticker_options(n_intervals):
 
 
 @app.callback(
-    [Output('investment_output', 'children'), Output('portfolio_growth', 'figure')],
+    [
+        Output('investment_output', 'children'),
+        Output('portfolio_growth', 'figure'),
+        Output('calc_alert', 'is_open'),
+        Output('calc_alert', 'children'),
+        Output('calc_alert', 'color'),
+        Output('portfolio_stats', 'children'),
+    ],
     [Input('calculate-button', 'n_clicks')],
     [State('initial_investment', 'value'), State('monthly_investment', 'value'), State('allocation_table', 'data')]
 )
 def display_growth(n_clicks, initial_investment, month_invest, allocation):
+    alert_open = False
+    alert_text = ""
+    alert_color = "warning"
+
     if not allocation:
-        return "0 USD", {}
+        return "—", empty_figure("Add tickers and allocations to calculate"), alert_open, alert_text, alert_color, []
 
     alloc_df = pd.DataFrame(allocation)
     alloc_df['Allocation'] = pd.to_numeric(alloc_df['Allocation'], errors='coerce').fillna(0)
     initial_investment = initial_investment or 0
     month_invest = month_invest or 0
 
+    alloc_sum = alloc_df['Allocation'].sum()
+    if not np.isclose(alloc_sum, 100, atol=0.5):
+        alert_text = f"Allocations must sum to 100%. Current total: {alloc_sum:,.1f}%."
+        return "—", empty_figure(alert_text), True, alert_text, "warning", []
+
     if isinstance(price_data, list):
-        if not price_data:  # It's an empty list
-            return "0 USD", {}
+        if not price_data:
+            return "—", empty_figure("Load prices first, then run the calculator"), True, "Load prices first, then run the calculator.", "info", []
         working_price_data = pd.concat(price_data)
     else:
         if price_data.empty:
-            return "0 USD", {}
+            return "—", empty_figure("Load prices first, then run the calculator"), True, "Load prices first, then run the calculator.", "info", []
         working_price_data = price_data
+
+    if working_price_data.empty:
+        return "—", empty_figure("No price data available for this selection"), True, "No price data available for this selection.", "info", []
 
     summary_df = pd.DataFrame(columns=['stock', 'start_date', 'initial_price', 'end_date', 'end_price', 'allocation(%)', 'Shares (initial)', 'Shares (monthly)', 'value ($)'])
     daily_value_df = pd.DataFrame(columns=['symbol', 'date', 'adjClose', 'daily_value'])
@@ -323,6 +442,10 @@ def display_growth(n_clicks, initial_investment, month_invest, allocation):
         summary_df.loc[i] = [tic, start_date, price_at_start, end_date, price_at_end, tic_allocation, round(init_shares, 2), round(monthly_shares, 2), value]
         i += 1
 
+    if summary_df.empty:
+        alert_text = "No data available for the selected tickers and dates."
+        return "—", empty_figure(alert_text), True, alert_text, "info", []
+
     if not daily_value_df.empty:
         portfolio_daily = daily_value_df.groupby('date')['daily_value'].sum().reset_index()
         traces.append({'x': portfolio_daily['date'], 'y': portfolio_daily['daily_value'], 'name': 'Portfolio value'})
@@ -332,8 +455,16 @@ def display_growth(n_clicks, initial_investment, month_invest, allocation):
         'layout': go.Layout(yaxis={'title': 'Value in USD'}, template='simple_white')
     }
 
-    cash_out_value = summary_df['value ($)'].sum()
-    return "{} USD".format(round(cash_out_value, 2)), fig
+    cash_out_value = float(summary_df['value ($)'].sum())
+    earliest_date = pd.to_datetime(working_price_data['date']).min()
+    latest_date = pd.to_datetime(working_price_data['date']).max()
+    months_elapsed = max(1, (latest_date.year - earliest_date.year) * 12 + latest_date.month - earliest_date.month + 1)
+    total_contributions = float(initial_investment) + float(month_invest) * months_elapsed
+    gain = cash_out_value - total_contributions
+    return_pct = (cash_out_value / total_contributions - 1) * 100 if total_contributions > 0 else 0
+
+    stats = build_stats_cards(total_contributions, cash_out_value, gain, return_pct)
+    return format_currency(cash_out_value), fig, alert_open, alert_text, alert_color, stats
 
 @app.callback(
     [Output('my_graph', 'figure'), Output('allocation_table', 'data')],
@@ -364,15 +495,7 @@ def update_graph(n_clicks, date_range, stock_ticker):
 
     for tic in stock_ticker:
         try:
-            df = yf.download(
-                tic,
-                start=start,
-                end=end,
-                progress=False,
-                auto_adjust=True,  # adjusted prices
-                actions=False,
-                group_by="column"
-            )
+            df = get_price_data(tic, start, end)
             df.reset_index(inplace=True)
             if df.empty:
                 continue
@@ -407,8 +530,14 @@ def update_graph(n_clicks, date_range, stock_ticker):
 
     if price_data:
         price_data = pd.concat(price_data)
+    else:
+        fig = empty_figure("No price data for this selection")
+        initial_alloc_table = pd.DataFrame({'Stock symbol': stock_ticker, 'Allocation': [0]*len(stock_ticker)})
+        if len(stock_ticker) == 2:
+            initial_alloc_table['Allocation'] = [50, 50]
+        return fig, initial_alloc_table.to_dict('records')
 
-    fig = {
+    fig = empty_figure("No price data for this selection") if not traces else {
         'data': traces,
         'layout': go.Layout(
             yaxis={'title': 'Stock Prices in USD'},
