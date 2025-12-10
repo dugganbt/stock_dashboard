@@ -1,0 +1,15 @@
+# Virtual Environment
+venv/
+env/
+.env
+
+# Python compilation files
+__pycache__/
+*.py[cod]
+
+# Mac system files (if you are on Mac)
+.DS_Store
+
+# IDE settings (optional)
+.vscode/
+.idea/

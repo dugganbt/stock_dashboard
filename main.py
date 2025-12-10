@@ -4,6 +4,7 @@ Date: 28 March 2023
 Updated for Vercel:
 - Compatible with Dash Mantine Components 0.14+ (DatePickerInput)
 - Uses yfinance for reliable data fetching
+- Fixes DataFrame boolean error
 '''
 
 from pathlib import Path
@@ -17,6 +18,7 @@ import plotly.graph_objs as go
 import dash_bootstrap_components as dbc
 import dash_mantine_components as dmc
 
+# 1. Set React version for DMC 0.14+ compatibility
 _dash_renderer._set_react_version("18.2.0")
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -28,7 +30,6 @@ try:
     tic_symbols.set_index('ticker', inplace=True)
     options = list(tic_symbols.index)
 except Exception as e:
-    # Fallback if CSV is missing or CS is delisted
     options = ["TSLA", "AAPL", "MSFT", "GOOGL"]
 
 price_data = [] 
@@ -49,7 +50,7 @@ app = Dash(__name__, external_stylesheets=[dbc.themes.MINTY],
 
 server = app.server
 
-# 2. CRITICAL: Wrap layout in MantineProvider for DMC 0.14+
+# 2. Wrap layout in MantineProvider
 app.layout = dmc.MantineProvider(
     dbc.Container([
         dbc.Row([
@@ -72,7 +73,7 @@ app.layout = dmc.MantineProvider(
 
             dbc.Col([
                 html.H5('Select a start and end date'),
-                # 3. CRITICAL: Use DatePickerInput (type="range") instead of old DateRangePicker
+                # 3. Use DatePickerInput (type="range")
                 dmc.DatePickerInput(
                     id='my_date_picker',
                     type="range",
@@ -173,15 +174,22 @@ app.layout = dmc.MantineProvider(
     [State('initial_investment', 'value'), State('monthly_investment', 'value'), State('allocation_table', 'data')]
 )
 def display_growth(n_clicks, initial_investment, month_invest, allocation):
-    if not allocation or not price_data:
+    if not allocation:
         return "0 USD", {}
-        
+
     alloc_df = pd.DataFrame(allocation)
-    
-    # Safety check for empty price data
-    working_price_data = pd.concat(price_data) if isinstance(price_data, list) else price_data
-    if working_price_data.empty:
-         return "0 USD", {}
+    alloc_df['Allocation'] = pd.to_numeric(alloc_df['Allocation'], errors='coerce').fillna(0)
+    initial_investment = initial_investment or 0
+    month_invest = month_invest or 0
+
+    if isinstance(price_data, list):
+        if not price_data:  # It's an empty list
+            return "0 USD", {}
+        working_price_data = pd.concat(price_data)
+    else:
+        if price_data.empty:
+            return "0 USD", {}
+        working_price_data = price_data
 
     summary_df = pd.DataFrame(columns=['stock', 'start_date', 'initial_price', 'end_date', 'end_price', 'allocation(%)', 'Shares (initial)', 'Shares (monthly)', 'value ($)'])
     daily_value_df = pd.DataFrame(columns=['symbol', 'date', 'adjClose', 'daily_value'])
@@ -193,10 +201,30 @@ def display_growth(n_clicks, initial_investment, month_invest, allocation):
             continue
             
         tic_data = working_price_data[working_price_data['symbol'] == tic].copy()
-        if tic_data.empty: continue
+        price_col = None
+        if 'adjClose' in tic_data.columns:
+            price_col = 'adjClose'
+        elif 'Adj Close' in tic_data.columns:
+            price_col = 'Adj Close'
+        elif 'Close' in tic_data.columns:
+            price_col = 'Close'
+        elif 'close' in tic_data.columns:
+            price_col = 'close'
+        else:
+            continue
 
-        price_at_start = round(tic_data.iloc[0]['adjClose'], 2)
-        price_at_end = tic_data.iloc[-1]['adjClose']
+        tic_data['date'] = pd.to_datetime(tic_data['date'])
+        tic_data = tic_data.sort_values('date')
+        tic_data[price_col] = pd.to_numeric(tic_data[price_col], errors='coerce')
+        tic_data = tic_data.dropna(subset=[price_col])
+        if tic_data.empty:
+            continue
+
+        price_at_start = float(tic_data.iloc[0][price_col])
+        if price_at_start == 0:
+            continue
+
+        price_at_end = float(tic_data.iloc[-1][price_col])
         start_date = tic_data.iloc[0]['date']
         end_date = tic_data.iloc[-1]['date']
 
@@ -210,13 +238,21 @@ def display_growth(n_clicks, initial_investment, month_invest, allocation):
         
         # Calculate monthly updates
         for (year, month), data in tic_data.groupby(['year', 'month']):
-            month_price = data['adjClose'].iloc[0]
+            month_price = data[price_col].iloc[0]
+            if pd.isna(month_price) or month_price == 0:
+                continue
             monthly_shares += (month_invest * tic_allocation / 100) / month_price
             
-            vals = data['adjClose'] * monthly_shares
-            temp_df = data[['symbol', 'date', 'adjClose']].copy()
+            vals = data[price_col] * monthly_shares
+            temp_df = data[['symbol', 'date', price_col]].copy()
+            temp_df.rename(columns={price_col: 'adjClose'}, inplace=True)
             temp_df['daily_value'] = vals
-            daily_value_df = pd.concat([daily_value_df, temp_df])
+            if temp_df.empty:
+                continue
+            if daily_value_df.empty:
+                daily_value_df = temp_df
+            else:
+                daily_value_df = pd.concat([daily_value_df, temp_df], ignore_index=True)
 
         value = round(price_at_end * monthly_shares, 2)
         summary_df.loc[i] = [tic, start_date, price_at_start, end_date, price_at_end, tic_allocation, round(init_shares, 2), round(monthly_shares, 2), value]
@@ -246,7 +282,7 @@ def update_graph(n_clicks, date_range, stock_ticker):
     start_date = date_range[0]
     end_date = date_range[1]
     
-    # 4. FIX: Ensure dates are proper datetime objects
+    # Ensure dates are datetime objects
     if isinstance(start_date, str):
         start = datetime.fromisoformat(start_date).replace(tzinfo=None)
     else:
@@ -263,20 +299,39 @@ def update_graph(n_clicks, date_range, stock_ticker):
 
     for tic in stock_ticker:
         try:
-
-            df = yf.download(tic, start=start, end=end, progress=False)
+            df = yf.download(
+                tic,
+                start=start,
+                end=end,
+                progress=False,
+                auto_adjust=True,  # adjusted prices
+                actions=False,
+                group_by="column"
+            )
             df.reset_index(inplace=True)
+            if df.empty:
+                continue
+
+            # Flatten possible MultiIndex columns (e.g., ('Close', 'AAPL') -> 'Close')
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = [col[0] if isinstance(col, tuple) and len(col) > 0 else col for col in df.columns]
             
-            # yfinance creates 'Adj Close', but our code uses 'adjClose'
+            # Standardize column names
             if 'Adj Close' in df.columns:
                 df.rename(columns={'Adj Close': 'adjClose'}, inplace=True)
-            elif 'Close' in df.columns:
-                # Fallback if Adj Close isn't present
+            if 'Adj_Close' in df.columns:
+                df.rename(columns={'Adj_Close': 'adjClose'}, inplace=True)
+            if 'Close' in df.columns and 'adjClose' not in df.columns:
                 df['adjClose'] = df['Close']
-            
-            # yfinance 'Date' column is usually correct, but ensure consistency
+            if 'close' in df.columns and 'adjClose' not in df.columns:
+                df['adjClose'] = df['close']
             if 'Date' in df.columns:
                 df.rename(columns={'Date': 'date'}, inplace=True)
+            if 'date' not in df.columns and 'Datetime' in df.columns:
+                df.rename(columns={'Datetime': 'date'}, inplace=True)
+
+            if 'adjClose' not in df.columns or 'date' not in df.columns:
+                continue
                 
             df['symbol'] = tic
             
